@@ -129,13 +129,15 @@ fn test_liquidation_boundary() {
         li.max_entry_ttl = 10_000_001;
     });
     let client = deploy(&env);
-    // Use LTV=90% so a loan at 90% of appraised has HF = 8500*100 / (9000*100) = 94 < 120
+    // LTV=90% max (collateral_ratio_bps=9000). liquidation_threshold_bps=9500
+    // (> collateral) so a max loan at 90% of appraised has
+    // HF = 1_000_000 * 9500 * 100 / (900_000 * 10_000) = 105 < 120 → liquidatable.
     let admin = Address::generate(&env);
     let o1 = Address::generate(&env);
     let o2 = Address::generate(&env);
     let o3 = Address::generate(&env);
     client.initialize(
-        &admin, &o1, &o2, &o3, &9_000, &8_500, &500, &1_000, &0, &100,
+        &admin, &o1, &o2, &o3, &9_000, &9_500, &500, &1_000, &0, &100,
     );
 
     let owner = Address::generate(&env);
@@ -226,6 +228,56 @@ fn test_full_repayment_frees_asset() {
 }
 
 #[test]
+fn test_reopen_same_asset_same_ledger_preserves_closed_loan() {
+    let env = make_env();
+    let client = deploy(&env);
+    let _ = init(&env, &client);
+    let owner = Address::generate(&env);
+    let asset_id = client.register_asset(
+        &owner,
+        &symbol_short!("CATTLE"),
+        &symbol_short!("T8"),
+        &1_000_000,
+    );
+
+    let first_loan_id = client.open_loan(&owner, &asset_id, &100_000);
+    assert_eq!(client.repay_loan(&owner, &first_loan_id, &200_000), 0);
+
+    let closed_before_reopen = client.get_loan(&first_loan_id);
+    assert!(!closed_before_reopen.active);
+    assert_eq!(closed_before_reopen.balance, 0);
+
+    // Do not advance the ledger: this is the collision window from issue #94.
+    let second_loan_id = client.open_loan(&owner, &asset_id, &200_000);
+    assert_ne!(first_loan_id, second_loan_id);
+
+    // Reopening must not overwrite the settled loan's audit record.
+    let closed_after_reopen = client.get_loan(&first_loan_id);
+    assert_eq!(closed_after_reopen.borrower, closed_before_reopen.borrower);
+    assert_eq!(closed_after_reopen.asset_id, closed_before_reopen.asset_id);
+    assert_eq!(
+        closed_after_reopen.principal,
+        closed_before_reopen.principal
+    );
+    assert_eq!(closed_after_reopen.balance, closed_before_reopen.balance);
+    assert_eq!(
+        closed_after_reopen.opened_at,
+        closed_before_reopen.opened_at
+    );
+    assert_eq!(
+        closed_after_reopen.updated_at,
+        closed_before_reopen.updated_at
+    );
+    assert_eq!(closed_after_reopen.active, closed_before_reopen.active);
+
+    let reopened = client.get_loan(&second_loan_id);
+    assert!(reopened.active);
+    assert_eq!(reopened.principal, 200_000);
+    assert_eq!(reopened.opened_at, closed_before_reopen.opened_at);
+    assert!(client.get_asset(&asset_id).on_loan);
+}
+
+#[test]
 fn test_unauthorized_oracle_rejected() {
     let env = make_env();
     let client = deploy(&env);
@@ -233,4 +285,121 @@ fn test_unauthorized_oracle_rejected() {
     let rogue = Address::generate(&env);
     let res = client.try_submit_price(&rogue, &999);
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+// ── initialize() config validation ─────────────────────────────────────────
+
+#[test]
+fn test_initialize_zero_collateral_rejected() {
+    let env = make_env();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let o1 = Address::generate(&env);
+    let o2 = Address::generate(&env);
+    let o3 = Address::generate(&env);
+    let res = client.try_initialize(&admin, &o1, &o2, &o3, &0, &8_500, &500, &1_000, &0, &100);
+    assert_eq!(res, Err(Ok(Error::InvalidConfig)));
+}
+
+#[test]
+fn test_initialize_negative_collateral_rejected() {
+    let env = make_env();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let o1 = Address::generate(&env);
+    let o2 = Address::generate(&env);
+    let o3 = Address::generate(&env);
+    let res = client.try_initialize(&admin, &o1, &o2, &o3, &-1, &8_500, &500, &1_000, &0, &100);
+    assert_eq!(res, Err(Ok(Error::InvalidConfig)));
+}
+
+#[test]
+fn test_initialize_threshold_equal_collateral_rejected() {
+    let env = make_env();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let o1 = Address::generate(&env);
+    let o2 = Address::generate(&env);
+    let o3 = Address::generate(&env);
+    // liquidation_threshold_bps == collateral_ratio_bps is not allowed
+    let res = client.try_initialize(
+        &admin, &o1, &o2, &o3, &7_000, &7_000, &500, &1_000, &0, &100,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidConfig)));
+}
+
+#[test]
+fn test_initialize_threshold_below_collateral_rejected() {
+    let env = make_env();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let o1 = Address::generate(&env);
+    let o2 = Address::generate(&env);
+    let o3 = Address::generate(&env);
+    // liquidation_threshold_bps < collateral_ratio_bps is not allowed
+    let res = client.try_initialize(
+        &admin, &o1, &o2, &o3, &9_000, &8_500, &500, &1_000, &0, &100,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidConfig)));
+}
+
+#[test]
+fn test_initialize_threshold_above_100pct_rejected() {
+    let env = make_env();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let o1 = Address::generate(&env);
+    let o2 = Address::generate(&env);
+    let o3 = Address::generate(&env);
+    // liquidation_threshold_bps > 10_000 (>100%) would make all loans
+    // permanently liquidatable
+    let res = client.try_initialize(
+        &admin, &o1, &o2, &o3, &7_000, &10_500, &500, &1_000, &0, &100,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidConfig)));
+}
+
+#[test]
+fn test_initialize_valid_config_succeeds() {
+    let env = make_env();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let o1 = Address::generate(&env);
+    let o2 = Address::generate(&env);
+    let o3 = Address::generate(&env);
+    // collateral 7000, threshold 8500 (threshold > collateral, both <= 10_000)
+    let res = client.try_initialize(
+        &admin, &o1, &o2, &o3, &7_000, &8_500, &500, &1_000, &0, &100,
+    );
+    assert_eq!(res, Ok(Ok(())));
+}
+
+#[test]
+fn test_persistent_ttl_survives_threshold() {
+    let env = make_env();
+    // Low base TTL so entries would evict quickly without TTL extensions.
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 100;
+        li.max_entry_ttl = 500_000;
+    });
+    let client = deploy(&env);
+    let _ = init(&env, &client);
+    let owner = Address::generate(&env);
+    let asset_id = client.register_asset(
+        &owner,
+        &symbol_short!("CATTLE"),
+        &symbol_short!("TTLT"),
+        &1_000_000,
+    );
+    let loan_id = client.open_loan(&owner, &asset_id, &100_000);
+
+    // Advance well past PERSISTENT_TTL_THRESHOLD (17_280 ledgers).
+    env.ledger().with_mut(|li| li.sequence_number = 20_000);
+
+    // Both persistent entries remain readable because every write/read path
+    // extends their TTL.
+    let asset = client.get_asset(&asset_id);
+    assert_eq!(asset.appraised_value_xlm, 1_000_000);
+    let loan = client.get_loan(&loan_id);
+    assert_eq!(loan.principal, 100_000);
 }

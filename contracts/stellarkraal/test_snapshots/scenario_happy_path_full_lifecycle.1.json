@@ -322,7 +322,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "bytes": "ab62c7044cffd7f7690a835f099a80774fa423741c7123180523cdb8d77b8a6d"
+                  "bytes": "0433aaaff189453eba4b5c245d945481632c43e24ef06451247f5f58376db2b4"
                 },
                 {
                   "i128": {
@@ -542,7 +542,7 @@
                   "symbol": "LOAN"
                 },
                 {
-                  "bytes": "ab62c7044cffd7f7690a835f099a80774fa423741c7123180523cdb8d77b8a6d"
+                  "bytes": "0433aaaff189453eba4b5c245d945481632c43e24ef06451247f5f58376db2b4"
                 }
               ]
             },
@@ -562,7 +562,7 @@
                       "symbol": "LOAN"
                     },
                     {
-                      "bytes": "ab62c7044cffd7f7690a835f099a80774fa423741c7123180523cdb8d77b8a6d"
+                      "bytes": "0433aaaff189453eba4b5c245d945481632c43e24ef06451247f5f58376db2b4"
                     }
                   ]
                 },
@@ -765,6 +765,14 @@
                               }
                             }
                           ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "LOANCTR"
+                        },
+                        "val": {
+                          "u64": 1
                         }
                       },
                       {
